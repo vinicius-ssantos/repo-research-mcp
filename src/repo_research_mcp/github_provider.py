@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -15,6 +16,33 @@ _SNIPPET_MAX = 500
 _MAX_RETRIES = 3
 _RETRY_STATUSES = {429, 503}
 _TREE_MAX = 300
+
+
+class _TTLCache:
+    """Simple in-process TTL cache keyed by string."""
+
+    def __init__(self, ttl_seconds: float) -> None:
+        self._ttl = ttl_seconds
+        self._store: dict[str, tuple[float, Any]] = {}
+
+    def get(self, key: str) -> tuple[bool, Any]:
+        entry = self._store.get(key)
+        if entry is None:
+            return False, None
+        ts, value = entry
+        if time.monotonic() - ts > self._ttl:
+            del self._store[key]
+            return False, None
+        return True, value
+
+    def set(self, key: str, value: Any) -> None:
+        self._store[key] = (time.monotonic(), value)
+
+    def clear(self) -> None:
+        self._store.clear()
+
+    def __len__(self) -> int:
+        return len(self._store)
 
 
 @dataclass
@@ -70,7 +98,8 @@ class RepositoryProvider(ABC):
         limit: int,
         file_extension: str | None = None,
         language: str | None = None,
-    ) -> list[FileMatch]: ...
+        page: int = 1,
+    ) -> tuple[list[FileMatch], int]: ...
 
     @abstractmethod
     async def fetch_file(
@@ -105,13 +134,21 @@ class RepositoryProvider(ABC):
 
 
 class GitHubProvider(RepositoryProvider):
-    """Read-only GitHub REST API provider with rate-limit retry."""
+    """Read-only GitHub REST API provider with rate-limit retry and TTL cache."""
 
-    def __init__(self, token: str | None = None, base_url: str = _GITHUB_API) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        base_url: str = _GITHUB_API,
+        cache_ttl_seconds: float = 300.0,
+    ) -> None:
         headers: dict[str, str] = {"X-GitHub-Api-Version": "2022-11-28"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=30.0)
+        self._cache: _TTLCache | None = (
+            _TTLCache(cache_ttl_seconds) if cache_ttl_seconds > 0 else None
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -143,7 +180,8 @@ class GitHubProvider(RepositoryProvider):
         limit: int,
         file_extension: str | None = None,
         language: str | None = None,
-    ) -> list[FileMatch]:
+        page: int = 1,
+    ) -> tuple[list[FileMatch], int]:
         q = f"{query} repo:{owner}/{repo}"
         if file_extension:
             q = f"{q} extension:{file_extension.lstrip('.')}"
@@ -152,10 +190,11 @@ class GitHubProvider(RepositoryProvider):
 
         response = await self._get(
             "/search/code",
-            params={"q": q, "per_page": min(limit, 30)},
+            params={"q": q, "per_page": min(limit, 100), "page": page},
             headers={"Accept": _ACCEPT_TEXT_MATCH},
         )
         data = response.json()
+        total_count: int = data.get("total_count", 0)
 
         results: list[FileMatch] = []
         for item in data.get("items", []):
@@ -167,7 +206,7 @@ class GitHubProvider(RepositoryProvider):
                     snippet=_extract_snippet(item),
                 )
             )
-        return results
+        return results, total_count
 
     async def fetch_file(
         self,
@@ -202,12 +241,18 @@ class GitHubProvider(RepositoryProvider):
         )
 
     async def fetch_repository_info(self, owner: str, repo: str) -> RepositoryInfo:
+        cache_key = f"repo_info:{owner}/{repo}"
+        if self._cache:
+            hit, cached = self._cache.get(cache_key)
+            if hit:
+                return cast(RepositoryInfo, cached)
+
         response = await self._get(
             f"/repos/{owner}/{repo}",
             headers={"Accept": _ACCEPT_JSON},
         )
         data = response.json()
-        return RepositoryInfo(
+        result = RepositoryInfo(
             full_name=data["full_name"],
             description=data.get("description"),
             default_branch=data.get("default_branch", "main"),
@@ -218,10 +263,19 @@ class GitHubProvider(RepositoryProvider):
             html_url=data["html_url"],
             size_kb=data.get("size", 0),
         )
+        if self._cache:
+            self._cache.set(cache_key, result)
+        return result
 
     async def fetch_tree(
         self, owner: str, repo: str, ref: str
     ) -> tuple[list[str], bool]:
+        cache_key = f"tree:{owner}/{repo}:{ref}"
+        if self._cache:
+            hit, cached = self._cache.get(cache_key)
+            if hit:
+                return cast(tuple[list[str], bool], cached)
+
         response = await self._get(
             f"/repos/{owner}/{repo}/git/trees/{ref}",
             params={"recursive": "1"},
@@ -235,11 +289,20 @@ class GitHubProvider(RepositoryProvider):
         ]
         api_truncated: bool = data.get("truncated", False)
         limit_truncated = len(paths) > _TREE_MAX
-        return sorted(paths[:_TREE_MAX]), api_truncated or limit_truncated
+        result = sorted(paths[:_TREE_MAX]), api_truncated or limit_truncated
+        if self._cache:
+            self._cache.set(cache_key, result)
+        return result
 
     async def fetch_readme(
         self, owner: str, repo: str, ref: str, max_bytes: int
     ) -> str | None:
+        cache_key = f"readme:{owner}/{repo}:{ref}:{max_bytes}"
+        if self._cache:
+            hit, cached = self._cache.get(cache_key)
+            if hit:
+                return cast("str | None", cached)
+
         try:
             response = await self._get(
                 f"/repos/{owner}/{repo}/readme",
@@ -248,6 +311,8 @@ class GitHubProvider(RepositoryProvider):
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
+                if self._cache:
+                    self._cache.set(cache_key, None)
                 return None
             raise
         data = response.json()
@@ -258,11 +323,19 @@ class GitHubProvider(RepositoryProvider):
         text = raw[:max_bytes].decode("utf-8", errors="replace")
         if len(raw) > max_bytes:
             text += f"\n\n[truncated — README is {len(raw)} bytes]"
+        if self._cache:
+            self._cache.set(cache_key, text)
         return text
 
     async def list_directory(
         self, owner: str, repo: str, path: str, ref: str
     ) -> list[DirectoryEntry]:
+        cache_key = f"dir:{owner}/{repo}:{ref}:{path}"
+        if self._cache:
+            hit, cached = self._cache.get(cache_key)
+            if hit:
+                return cast(list[DirectoryEntry], cached)
+
         contents_path = path or ""
         url_path = f"/repos/{owner}/{repo}/contents/{contents_path}".rstrip("/")
         response = await self._get(
@@ -294,6 +367,8 @@ class GitHubProvider(RepositoryProvider):
             )
 
         entries.sort(key=lambda e: (e.type == "file", e.name.lower()))
+        if self._cache:
+            self._cache.set(cache_key, entries)
         return entries
 
 

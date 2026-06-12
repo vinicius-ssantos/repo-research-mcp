@@ -26,6 +26,7 @@ class InMemoryProvider(RepositoryProvider):
         self._description = description
         self.last_search_extension: str | None = None
         self.last_search_language: str | None = None
+        self.last_search_page: int = 1
 
     async def search_code(
         self,
@@ -35,9 +36,11 @@ class InMemoryProvider(RepositoryProvider):
         limit: int,
         file_extension: str | None = None,
         language: str | None = None,
-    ) -> list[FileMatch]:
+        page: int = 1,
+    ) -> tuple[list[FileMatch], int]:
         self.last_search_extension = file_extension
         self.last_search_language = language
+        self.last_search_page = page
         results: list[FileMatch] = []
         for path, content in self._files.items():
             if file_extension:
@@ -53,7 +56,8 @@ class InMemoryProvider(RepositoryProvider):
                         snippet=content[:200],
                     )
                 )
-        return results[:limit]
+        total = len(results)
+        return results[:limit], total
 
     async def fetch_file(
         self,
@@ -311,14 +315,15 @@ async def test_search_snippet_fallback_when_empty() -> None:
             limit: int,
             file_extension: str | None = None,
             language: str | None = None,
-        ) -> list[FileMatch]:
-            results = await super().search_code(
+            page: int = 1,
+        ) -> tuple[list[FileMatch], int]:
+            results, total = await super().search_code(
                 owner, repo, query, limit,
-                file_extension=file_extension, language=language,
+                file_extension=file_extension, language=language, page=page,
             )
             for r in results:
                 r.snippet = ""
-            return results
+            return results, total
 
     svc._provider = NoSnippetProvider({"src/app.py": "match"})
     response = await svc.search("owner/repo", "match")
@@ -498,3 +503,35 @@ async def test_list_files_denied_for_unknown_repo() -> None:
     svc, _ = _make_service(repos=["owner/repo"], files={})
     with pytest.raises(PermissionError):
         await svc.list_files("evil/repo")
+
+
+# --- pagination ---
+
+
+@pytest.mark.asyncio
+async def test_search_response_includes_total_count() -> None:
+    files = {f"file{i}.py": "match" for i in range(5)}
+    svc, _ = _make_service(repos=["owner/repo"], files=files)
+    response = await svc.search("owner/repo", "match")
+    assert response.total_count == 5
+
+
+@pytest.mark.asyncio
+async def test_search_response_includes_page() -> None:
+    svc, _ = _make_service(repos=["owner/repo"], files={"file.py": "content"})
+    response = await svc.search("owner/repo", "content", page=2)
+    assert response.page == 2
+
+
+@pytest.mark.asyncio
+async def test_search_page_passed_to_provider() -> None:
+    svc, provider = _make_service(repos=["owner/repo"], files={"file.py": "data"})
+    await svc.search("owner/repo", "data", page=3)
+    assert provider.last_search_page == 3
+
+
+@pytest.mark.asyncio
+async def test_search_default_page_is_one() -> None:
+    svc, provider = _make_service(repos=["owner/repo"], files={"file.py": "data"})
+    await svc.search("owner/repo", "data")
+    assert provider.last_search_page == 1
