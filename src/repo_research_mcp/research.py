@@ -35,6 +35,7 @@ class RepositoryResearchService:
         repository: str,
         query: str,
         limit: int | None = None,
+        file_extension: str | None = None,
     ) -> SearchResponse:
         repo_ref = self._allowlist.require(repository)
         ref = self._settings.default_ref
@@ -48,6 +49,7 @@ class RepositoryResearchService:
             repo=repo_ref.repo,
             query=query,
             limit=max_results,
+            file_extension=file_extension,
         )
 
         results: list[SearchResult] = []
@@ -96,7 +98,10 @@ class RepositoryResearchService:
 
         text = content.text
         if content.truncated:
-            text += f"\n\n[truncated — file size {content.size} bytes exceeds limit {self._settings.max_fetch_bytes}]"
+            text += (
+                f"\n\n[truncated — file size {content.size} bytes"
+                f" exceeds limit {self._settings.max_fetch_bytes}]"
+            )
 
         return FetchResponse(
             document=FetchedDocument(

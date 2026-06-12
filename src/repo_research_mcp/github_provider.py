@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
@@ -10,6 +12,8 @@ _GITHUB_API = "https://api.github.com"
 _ACCEPT_JSON = "application/vnd.github+json"
 _ACCEPT_TEXT_MATCH = "application/vnd.github.text-match+json"
 _SNIPPET_MAX = 500
+_MAX_RETRIES = 3
+_RETRY_STATUSES = {429, 503}
 
 
 @dataclass
@@ -40,6 +44,7 @@ class RepositoryProvider(ABC):
         repo: str,
         query: str,
         limit: int,
+        file_extension: str | None = None,
     ) -> list[FileMatch]: ...
 
     @abstractmethod
@@ -52,12 +57,12 @@ class RepositoryProvider(ABC):
         max_bytes: int,
     ) -> FileContent: ...
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> None:  # noqa: B027 — default no-op for providers without resources
         pass
 
 
 class GitHubProvider(RepositoryProvider):
-    """Read-only GitHub REST API provider."""
+    """Read-only GitHub REST API provider with rate-limit retry."""
 
     def __init__(self, token: str | None = None, base_url: str = _GITHUB_API) -> None:
         headers: dict[str, str] = {"X-GitHub-Api-Version": "2022-11-28"}
@@ -68,19 +73,43 @@ class GitHubProvider(RepositoryProvider):
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _get(self, path: str, **kwargs: Any) -> httpx.Response:
+        last_exc: httpx.HTTPStatusError | None = None
+        for attempt in range(_MAX_RETRIES):
+            response = await self._client.get(path, **kwargs)
+            if response.status_code not in _RETRY_STATUSES:
+                response.raise_for_status()
+                return response
+            retry_after = int(response.headers.get("Retry-After", 2 ** (attempt + 1)))
+            wait = min(retry_after, 60)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+            await asyncio.sleep(wait)
+        if last_exc:
+            raise last_exc
+        response.raise_for_status()
+        return response
+
     async def search_code(
         self,
         owner: str,
         repo: str,
         query: str,
         limit: int,
+        file_extension: str | None = None,
     ) -> list[FileMatch]:
-        response = await self._client.get(
+        q = f"{query} repo:{owner}/{repo}"
+        if file_extension:
+            ext = file_extension.lstrip(".")
+            q = f"{q} extension:{ext}"
+
+        response = await self._get(
             "/search/code",
-            params={"q": f"{query} repo:{owner}/{repo}", "per_page": min(limit, 30)},
+            params={"q": q, "per_page": min(limit, 30)},
             headers={"Accept": _ACCEPT_TEXT_MATCH},
         )
-        response.raise_for_status()
         data = response.json()
 
         results: list[FileMatch] = []
@@ -103,12 +132,11 @@ class GitHubProvider(RepositoryProvider):
         ref: str,
         max_bytes: int,
     ) -> FileContent:
-        response = await self._client.get(
+        response = await self._get(
             f"/repos/{owner}/{repo}/contents/{path}",
             params={"ref": ref},
             headers={"Accept": _ACCEPT_JSON},
         )
-        response.raise_for_status()
         data = response.json()
 
         if data.get("type") != "file":
@@ -131,7 +159,7 @@ class GitHubProvider(RepositoryProvider):
 
 def _extract_snippet(item: dict) -> str:  # type: ignore[type-arg]
     for match in item.get("text_matches", []):
-        fragment = match.get("fragment", "")
+        fragment: str = match.get("fragment", "")
         if fragment:
             return fragment[:_SNIPPET_MAX]
     return ""
