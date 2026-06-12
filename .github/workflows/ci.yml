@@ -27,3 +27,34 @@ jobs:
 
       - name: Tests
         run: pytest --tb=short
+
+  ci-self-hosted:
+    name: CI (self-hosted python-ci)
+    if: >
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'run-self-hosted')
+    runs-on: [self-hosted, linux, x64, python-ci]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner context
+        run: |
+          echo "runner.name=${RUNNER_NAME}"
+          echo "runner.os=${RUNNER_OS}"
+          echo "runner.arch=${RUNNER_ARCH}"
+          python --version
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: python -m mypy src tests
+
+      - name: Tests
+        run: pytest --tb=short
