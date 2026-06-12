@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -289,7 +290,13 @@ async def list_files(
 
 def main() -> None:
     configure_logging(_settings.log_format)
-    mcp.run()
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        host = os.getenv("MCP_HOST", "0.0.0.0")
+        port = int(os.getenv("MCP_PORT", "8081"))
+        mcp.run(transport="streamable-http", host=host, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":
