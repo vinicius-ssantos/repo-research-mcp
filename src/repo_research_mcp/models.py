@@ -49,6 +49,8 @@ class FetchedDocument(BaseModel):
 
 class SearchResponse(BaseModel):
     results: list[SearchResult]
+    total_count: int = 0
+    page: int = 1
 
 
 class FetchResponse(BaseModel):

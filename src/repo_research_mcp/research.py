@@ -87,7 +87,10 @@ class RepositoryResearchService:
     ) -> None:
         self._settings = settings
         self._allowlist = RepositoryAllowlist(settings.allowed_repositories)
-        self._provider = provider or GitHubProvider(token=settings.github_token)
+        self._provider = provider or GitHubProvider(
+            token=settings.github_token,
+            cache_ttl_seconds=settings.cache_ttl_seconds,
+        )
 
     async def aclose(self) -> None:
         await self._provider.aclose()
@@ -99,6 +102,7 @@ class RepositoryResearchService:
         limit: int | None = None,
         file_extension: str | None = None,
         language: str | None = None,
+        page: int = 1,
     ) -> SearchResponse:
         repo_ref = self._allowlist.require(repository)
         ref = self._settings.default_ref
@@ -107,13 +111,14 @@ class RepositoryResearchService:
             self._settings.max_search_results,
         )
 
-        matches = await self._provider.search_code(
+        matches, total_count = await self._provider.search_code(
             owner=repo_ref.owner,
             repo=repo_ref.repo,
             query=query,
             limit=max_results,
             file_extension=file_extension,
             language=language,
+            page=page,
         )
 
         results: list[SearchResult] = []
@@ -142,7 +147,7 @@ class RepositoryResearchService:
             )
 
         results.sort(key=lambda r: _result_score(r.metadata.path), reverse=True)
-        return SearchResponse(results=results)
+        return SearchResponse(results=results, total_count=total_count, page=page)
 
     async def fetch(self, document_id: str) -> FetchResponse:
         repository, ref, path = parse_document_id(document_id)
