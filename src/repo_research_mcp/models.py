@@ -75,3 +75,21 @@ class RepositoryOverview(BaseModel):
 
 class RepositoryOverviewResponse(BaseModel):
     overview: RepositoryOverview
+
+
+class FileEntry(BaseModel):
+    """A single file or directory entry returned by the list_files tool."""
+
+    name: str
+    path: str
+    type: Literal["file", "dir"]
+    sha: str | None = None
+    size: int | None = None
+    url: HttpUrl
+
+
+class ListFilesResponse(BaseModel):
+    repository: str
+    path: str
+    ref: str
+    entries: list[FileEntry]

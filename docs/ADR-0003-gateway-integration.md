@@ -38,6 +38,9 @@ upstreams:
       - name: repository_overview
         read_only: true
         description: Return a structured overview of a repository for research orientation.
+      - name: list_files
+        read_only: true
+        description: List files and directories at a path in a repository.
 ```
 
 ## Tool annotations

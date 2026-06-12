@@ -9,6 +9,8 @@ from repo_research_mcp.models import (
     DocumentMetadata,
     FetchedDocument,
     FetchResponse,
+    FileEntry,
+    ListFilesResponse,
     RepositoryOverview,
     RepositoryOverviewResponse,
     SearchResponse,
@@ -17,6 +19,7 @@ from repo_research_mcp.models import (
 from repo_research_mcp.settings import Settings
 
 _BLOB_URL = "https://github.com/{owner}/{repo}/blob/{ref}/{path}"
+_TREE_URL = "https://github.com/{owner}/{repo}/tree/{ref}/{path}"
 _REPO_URL = "https://github.com/{owner}/{repo}"
 
 _KEY_FILE_NAMES: frozenset[str] = frozenset({
@@ -212,4 +215,54 @@ class RepositoryResearchService:
                 readme_excerpt=readme,
                 tree_truncated=tree_truncated,
             )
+        )
+
+    async def list_files(
+        self,
+        repository: str,
+        path: str = "",
+        ref: str | None = None,
+    ) -> ListFilesResponse:
+        repo_ref = self._allowlist.require(repository)
+        resolved_ref = ref or self._settings.default_ref
+
+        raw_entries = await self._provider.list_directory(
+            owner=repo_ref.owner,
+            repo=repo_ref.repo,
+            path=path,
+            ref=resolved_ref,
+        )
+
+        entries: list[FileEntry] = []
+        for entry in raw_entries:
+            if entry.type == "file":
+                url = _BLOB_URL.format(
+                    owner=repo_ref.owner,
+                    repo=repo_ref.repo,
+                    ref=resolved_ref,
+                    path=entry.path,
+                )
+            else:
+                url = _TREE_URL.format(
+                    owner=repo_ref.owner,
+                    repo=repo_ref.repo,
+                    ref=resolved_ref,
+                    path=entry.path,
+                )
+            entries.append(
+                FileEntry(
+                    name=entry.name,
+                    path=entry.path,
+                    type=entry.type,  # type: ignore[arg-type]
+                    sha=entry.sha,
+                    size=entry.size,
+                    url=url,  # type: ignore[arg-type]
+                )
+            )
+
+        return ListFilesResponse(
+            repository=repo_ref.full_name,
+            path=path,
+            ref=resolved_ref,
+            entries=entries,
         )

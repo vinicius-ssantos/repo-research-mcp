@@ -15,7 +15,6 @@ _SNIPPET_MAX = 500
 _MAX_RETRIES = 3
 _RETRY_STATUSES = {429, 503}
 _TREE_MAX = 300
-_README_MAX_BYTES = 2_000
 
 
 @dataclass
@@ -47,6 +46,16 @@ class RepositoryInfo:
     topics: list[str]
     html_url: str
     size_kb: int
+
+
+@dataclass
+class DirectoryEntry:
+    name: str
+    path: str
+    type: str  # "file" or "dir"
+    sha: str | None
+    size: int | None
+    html_url: str
 
 
 class RepositoryProvider(ABC):
@@ -85,6 +94,11 @@ class RepositoryProvider(ABC):
     async def fetch_readme(
         self, owner: str, repo: str, ref: str, max_bytes: int
     ) -> str | None: ...
+
+    @abstractmethod
+    async def list_directory(
+        self, owner: str, repo: str, path: str, ref: str
+    ) -> list[DirectoryEntry]: ...
 
     async def aclose(self) -> None:  # noqa: B027 — default no-op for providers without resources
         pass
@@ -245,6 +259,42 @@ class GitHubProvider(RepositoryProvider):
         if len(raw) > max_bytes:
             text += f"\n\n[truncated — README is {len(raw)} bytes]"
         return text
+
+    async def list_directory(
+        self, owner: str, repo: str, path: str, ref: str
+    ) -> list[DirectoryEntry]:
+        contents_path = path or ""
+        url_path = f"/repos/{owner}/{repo}/contents/{contents_path}".rstrip("/")
+        response = await self._get(
+            url_path,
+            params={"ref": ref},
+            headers={"Accept": _ACCEPT_JSON},
+        )
+        data = response.json()
+
+        if isinstance(data, dict):
+            raise ValueError(
+                f"path is a file, not a directory: {path!r} — use fetch to get its content"
+            )
+
+        entries: list[DirectoryEntry] = []
+        for item in data:
+            entry_type = item.get("type", "file")
+            if entry_type not in ("file", "dir"):
+                continue
+            entries.append(
+                DirectoryEntry(
+                    name=item["name"],
+                    path=item["path"],
+                    type=entry_type,
+                    sha=item.get("sha"),
+                    size=item.get("size") if entry_type == "file" else None,
+                    html_url=item["html_url"],
+                )
+            )
+
+        entries.sort(key=lambda e: (e.type == "file", e.name.lower()))
+        return entries
 
 
 def _extract_snippet(item: dict) -> str:  # type: ignore[type-arg]

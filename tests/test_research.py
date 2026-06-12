@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from repo_research_mcp.github_provider import (
+    DirectoryEntry,
     FileContent,
     FileMatch,
     RepositoryInfo,
@@ -101,6 +102,49 @@ class InMemoryProvider(RepositoryProvider):
         if content is None:
             return None
         return content[:max_bytes]
+
+    async def list_directory(
+        self, owner: str, repo: str, path: str, ref: str
+    ) -> list[DirectoryEntry]:
+        prefix = (path.rstrip("/") + "/") if path else ""
+        entries: list[DirectoryEntry] = []
+        seen_dirs: set[str] = set()
+
+        for file_path in self._files:
+            if not file_path.startswith(prefix):
+                continue
+            relative = file_path[len(prefix):]
+            parts = relative.split("/")
+
+            if len(parts) == 1:
+                entries.append(
+                    DirectoryEntry(
+                        name=parts[0],
+                        path=file_path,
+                        type="file",
+                        sha="deadbeef",
+                        size=len(self._files[file_path]),
+                        html_url=f"https://github.com/{owner}/{repo}/blob/{ref}/{file_path}",
+                    )
+                )
+            else:
+                dir_name = parts[0]
+                dir_path = prefix + dir_name
+                if dir_path not in seen_dirs:
+                    seen_dirs.add(dir_path)
+                    entries.append(
+                        DirectoryEntry(
+                            name=dir_name,
+                            path=dir_path,
+                            type="dir",
+                            sha=None,
+                            size=None,
+                            html_url=f"https://github.com/{owner}/{repo}/tree/{ref}/{dir_path}",
+                        )
+                    )
+
+        entries.sort(key=lambda e: (e.type == "file", e.name.lower()))
+        return entries
 
 
 def _make_service(
@@ -392,3 +436,65 @@ async def test_overview_denied_for_unknown_repo() -> None:
     svc, _ = _make_service(repos=["owner/repo"], files={})
     with pytest.raises(PermissionError):
         await svc.repository_overview("evil/repo")
+
+
+# --- list_files ---
+
+
+@pytest.mark.asyncio
+async def test_list_files_root_returns_top_level() -> None:
+    files = {"README.md": "hi", "src/app.py": "x", "src/utils.py": "y"}
+    svc, _ = _make_service(repos=["owner/repo"], files=files)
+    response = await svc.list_files("owner/repo")
+    names = {e.name for e in response.entries}
+    assert "README.md" in names
+    assert "src" in names
+    assert "app.py" not in names
+
+
+@pytest.mark.asyncio
+async def test_list_files_subdirectory() -> None:
+    files = {"src/app.py": "x", "src/utils.py": "y", "src/sub/deep.py": "z"}
+    svc, _ = _make_service(repos=["owner/repo"], files=files)
+    response = await svc.list_files("owner/repo", path="src")
+    names = {e.name for e in response.entries}
+    assert "app.py" in names
+    assert "utils.py" in names
+    assert "sub" in names
+    assert "deep.py" not in names
+
+
+@pytest.mark.asyncio
+async def test_list_files_dirs_before_files() -> None:
+    files = {"src/app.py": "x", "src/lib/mod.py": "y", "README.md": "r"}
+    svc, _ = _make_service(repos=["owner/repo"], files=files)
+    response = await svc.list_files("owner/repo", path="src")
+    types = [e.type for e in response.entries]
+    # dirs should come before files
+    first_file = next(i for i, t in enumerate(types) if t == "file")
+    last_dir = max((i for i, t in enumerate(types) if t == "dir"), default=-1)
+    assert last_dir < first_file
+
+
+@pytest.mark.asyncio
+async def test_list_files_entry_has_canonical_url() -> None:
+    svc, _ = _make_service(repos=["owner/repo"], files={"docs/guide.md": "hi"})
+    response = await svc.list_files("owner/repo", path="docs")
+    file_entry = next(e for e in response.entries if e.type == "file")
+    assert "github.com/owner/repo/blob/main/docs/guide.md" in str(file_entry.url)
+
+
+@pytest.mark.asyncio
+async def test_list_files_response_metadata() -> None:
+    svc, _ = _make_service(repos=["owner/repo"], files={"src/app.py": "x"})
+    response = await svc.list_files("owner/repo", path="src", ref="develop")
+    assert response.repository == "owner/repo"
+    assert response.path == "src"
+    assert response.ref == "develop"
+
+
+@pytest.mark.asyncio
+async def test_list_files_denied_for_unknown_repo() -> None:
+    svc, _ = _make_service(repos=["owner/repo"], files={})
+    with pytest.raises(PermissionError):
+        await svc.list_files("evil/repo")

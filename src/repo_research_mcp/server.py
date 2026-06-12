@@ -37,6 +37,10 @@ def _get_service() -> RepositoryResearchService:
     return _service
 
 
+def _upstream_error(exc: httpx.HTTPStatusError) -> dict[str, Any]:
+    return {"error": "upstream_error", "detail": f"GitHub API returned {exc.response.status_code}"}
+
+
 @mcp.tool()
 async def search(
     query: str,
@@ -67,8 +71,7 @@ async def search(
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
         logger.error("GitHub API error during search: %s", exc.response.status_code)
-        status = exc.response.status_code
-        return {"error": "upstream_error", "detail": f"GitHub API returned {status}"}
+        return _upstream_error(exc)
     except Exception:
         logger.exception("unexpected error during search")
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
@@ -88,8 +91,7 @@ async def fetch(id: str) -> dict[str, Any]:
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
         logger.error("GitHub API error during fetch: %s", exc.response.status_code)
-        status = exc.response.status_code
-        return {"error": "upstream_error", "detail": f"GitHub API returned {status}"}
+        return _upstream_error(exc)
     except Exception:
         logger.exception("unexpected error during fetch")
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
@@ -113,10 +115,41 @@ async def repository_overview(repository: str) -> dict[str, Any]:
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
         logger.error("GitHub API error during repository_overview: %s", exc.response.status_code)
-        status = exc.response.status_code
-        return {"error": "upstream_error", "detail": f"GitHub API returned {status}"}
+        return _upstream_error(exc)
     except Exception:
         logger.exception("unexpected error during repository_overview")
+        return {"error": "internal_error", "detail": "An unexpected error occurred."}
+
+
+@mcp.tool()
+async def list_files(
+    repository: str,
+    path: str = "",
+    ref: str | None = None,
+) -> dict[str, Any]:
+    """List files and directories at a path in a repository.
+
+    Returns immediate children only (not recursive). Use path="" for the root.
+    Use fetch to retrieve the content of a specific file.
+    """
+    try:
+        response = await _get_service().list_files(
+            repository=repository,
+            path=path,
+            ref=ref,
+        )
+        result: dict[str, Any] = response.model_dump(mode="json")
+        return result
+    except PermissionError as exc:
+        logger.warning("list_files permission denied: %s", exc)
+        return {"error": "permission_denied", "detail": str(exc)}
+    except ValueError as exc:
+        return {"error": "invalid_request", "detail": str(exc)}
+    except httpx.HTTPStatusError as exc:
+        logger.error("GitHub API error during list_files: %s", exc.response.status_code)
+        return _upstream_error(exc)
+    except Exception:
+        logger.exception("unexpected error during list_files")
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
 
 
