@@ -9,7 +9,7 @@ class RepositoryAllowlist:
     """Allowlist for repositories that can be searched or fetched."""
 
     def __init__(self, repositories: Iterable[str]) -> None:
-        self._repositories = {self._normalize(repository) for repository in repositories if repository}
+        self._repositories = {self._normalize(repository) for repository in repositories if repository.strip()}
 
     @staticmethod
     def _normalize(repository: str) -> str:
