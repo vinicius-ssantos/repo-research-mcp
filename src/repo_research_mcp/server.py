@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from repo_research_mcp.logging_config import configure_logging, new_request_id
 from repo_research_mcp.research import RepositoryResearchService
 from repo_research_mcp.settings import Settings
 
@@ -48,12 +50,16 @@ async def search(
     limit: int = 10,
     file_extension: str | None = None,
     language: str | None = None,
+    page: int = 1,
 ) -> dict[str, Any]:
     """Search for relevant files and code in a repository.
 
     Results are ranked with documentation files first.
     Optionally filter by file extension (e.g. "py", ".ts") or language (e.g. "Python").
+    Use page to paginate through results (default 1).
     """
+    new_request_id()
+    t0 = time.monotonic()
     try:
         response = await _get_service().search(
             repository=repository,
@@ -61,39 +67,92 @@ async def search(
             limit=limit,
             file_extension=file_extension,
             language=language,
+            page=page,
+        )
+        duration = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "search ok",
+            extra={
+                "tool": "search",
+                "repository": repository,
+                "duration_ms": duration,
+                "result_count": len(response.results),
+            },
         )
         result: dict[str, Any] = response.model_dump(mode="json")
         return result
     except PermissionError as exc:
-        logger.warning("search permission denied: %s", exc)
+        logger.warning(
+            "search denied",
+            extra={"tool": "search", "repository": repository, "error_type": "permission_denied"},
+        )
         return {"error": "permission_denied", "detail": str(exc)}
     except ValueError as exc:
+        logger.warning(
+            "search invalid",
+            extra={"tool": "search", "repository": repository, "error_type": "invalid_request"},
+        )
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
-        logger.error("GitHub API error during search: %s", exc.response.status_code)
+        logger.error(
+            "search upstream error",
+            extra={
+                "tool": "search",
+                "repository": repository,
+                "error_type": "upstream_error",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
         return _upstream_error(exc)
     except Exception:
-        logger.exception("unexpected error during search")
+        logger.exception(
+            "search internal error",
+            extra={"tool": "search", "repository": repository, "error_type": "internal_error"},
+        )
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
 
 
 @mcp.tool()
 async def fetch(id: str) -> dict[str, Any]:
     """Fetch the full content of a document by its stable ID returned by search."""
+    new_request_id()
+    t0 = time.monotonic()
     try:
         response = await _get_service().fetch(document_id=id)
+        duration = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "fetch ok",
+            extra={"tool": "fetch", "duration_ms": duration},
+        )
         result: dict[str, Any] = response.model_dump(mode="json")
         return result
     except PermissionError as exc:
-        logger.warning("fetch permission denied: %s", exc)
+        logger.warning(
+            "fetch denied",
+            extra={"tool": "fetch", "error_type": "permission_denied"},
+        )
         return {"error": "permission_denied", "detail": str(exc)}
     except ValueError as exc:
+        logger.warning(
+            "fetch invalid",
+            extra={"tool": "fetch", "error_type": "invalid_request"},
+        )
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
-        logger.error("GitHub API error during fetch: %s", exc.response.status_code)
+        logger.error(
+            "fetch upstream error",
+            extra={
+                "tool": "fetch",
+                "error_type": "upstream_error",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
         return _upstream_error(exc)
     except Exception:
-        logger.exception("unexpected error during fetch")
+        logger.exception(
+            "fetch internal error",
+            extra={"tool": "fetch", "error_type": "internal_error"},
+        )
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
 
 
@@ -104,20 +163,61 @@ async def repository_overview(repository: str) -> dict[str, Any]:
     Includes metadata (description, stars, language), file tree, key files,
     and a README excerpt. Useful as a first call before searching.
     """
+    new_request_id()
+    t0 = time.monotonic()
     try:
         response = await _get_service().repository_overview(repository=repository)
+        duration = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "repository_overview ok",
+            extra={
+                "tool": "repository_overview",
+                "repository": repository,
+                "duration_ms": duration,
+            },
+        )
         result: dict[str, Any] = response.model_dump(mode="json")
         return result
     except PermissionError as exc:
-        logger.warning("repository_overview permission denied: %s", exc)
+        logger.warning(
+            "repository_overview denied",
+            extra={
+                "tool": "repository_overview",
+                "repository": repository,
+                "error_type": "permission_denied",
+            },
+        )
         return {"error": "permission_denied", "detail": str(exc)}
     except ValueError as exc:
+        logger.warning(
+            "repository_overview invalid",
+            extra={
+                "tool": "repository_overview",
+                "repository": repository,
+                "error_type": "invalid_request",
+            },
+        )
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
-        logger.error("GitHub API error during repository_overview: %s", exc.response.status_code)
+        logger.error(
+            "repository_overview upstream error",
+            extra={
+                "tool": "repository_overview",
+                "repository": repository,
+                "error_type": "upstream_error",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
         return _upstream_error(exc)
     except Exception:
-        logger.exception("unexpected error during repository_overview")
+        logger.exception(
+            "repository_overview internal error",
+            extra={
+                "tool": "repository_overview",
+                "repository": repository,
+                "error_type": "internal_error",
+            },
+        )
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
 
 
@@ -132,29 +232,63 @@ async def list_files(
     Returns immediate children only (not recursive). Use path="" for the root.
     Use fetch to retrieve the content of a specific file.
     """
+    new_request_id()
+    t0 = time.monotonic()
     try:
         response = await _get_service().list_files(
             repository=repository,
             path=path,
             ref=ref,
         )
+        duration = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "list_files ok",
+            extra={
+                "tool": "list_files",
+                "repository": repository,
+                "duration_ms": duration,
+                "result_count": len(response.entries),
+            },
+        )
         result: dict[str, Any] = response.model_dump(mode="json")
         return result
     except PermissionError as exc:
-        logger.warning("list_files permission denied: %s", exc)
+        logger.warning(
+            "list_files denied",
+            extra={
+                "tool": "list_files",
+                "repository": repository,
+                "error_type": "permission_denied",
+            },
+        )
         return {"error": "permission_denied", "detail": str(exc)}
     except ValueError as exc:
+        logger.warning(
+            "list_files invalid",
+            extra={"tool": "list_files", "repository": repository, "error_type": "invalid_request"},
+        )
         return {"error": "invalid_request", "detail": str(exc)}
     except httpx.HTTPStatusError as exc:
-        logger.error("GitHub API error during list_files: %s", exc.response.status_code)
+        logger.error(
+            "list_files upstream error",
+            extra={
+                "tool": "list_files",
+                "repository": repository,
+                "error_type": "upstream_error",
+                "duration_ms": int((time.monotonic() - t0) * 1000),
+            },
+        )
         return _upstream_error(exc)
     except Exception:
-        logger.exception("unexpected error during list_files")
+        logger.exception(
+            "list_files internal error",
+            extra={"tool": "list_files", "repository": repository, "error_type": "internal_error"},
+        )
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.WARNING)
+    configure_logging(_settings.log_format)
     mcp.run()
 
 
