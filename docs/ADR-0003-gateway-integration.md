@@ -35,6 +35,9 @@ upstreams:
       - name: fetch
         read_only: true
         description: Fetch the full content of a document by its stable ID.
+      - name: repository_overview
+        read_only: true
+        description: Return a structured overview of a repository for research orientation.
 ```
 
 ## Tool annotations

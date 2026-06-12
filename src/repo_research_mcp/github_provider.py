@@ -14,6 +14,8 @@ _ACCEPT_TEXT_MATCH = "application/vnd.github.text-match+json"
 _SNIPPET_MAX = 500
 _MAX_RETRIES = 3
 _RETRY_STATUSES = {429, 503}
+_TREE_MAX = 300
+_README_MAX_BYTES = 2_000
 
 
 @dataclass
@@ -34,6 +36,19 @@ class FileContent:
     truncated: bool = field(default=False)
 
 
+@dataclass
+class RepositoryInfo:
+    full_name: str
+    description: str | None
+    default_branch: str
+    stars: int
+    forks: int
+    language: str | None
+    topics: list[str]
+    html_url: str
+    size_kb: int
+
+
 class RepositoryProvider(ABC):
     """Abstract read-only repository content provider."""
 
@@ -45,6 +60,7 @@ class RepositoryProvider(ABC):
         query: str,
         limit: int,
         file_extension: str | None = None,
+        language: str | None = None,
     ) -> list[FileMatch]: ...
 
     @abstractmethod
@@ -56,6 +72,19 @@ class RepositoryProvider(ABC):
         ref: str,
         max_bytes: int,
     ) -> FileContent: ...
+
+    @abstractmethod
+    async def fetch_repository_info(self, owner: str, repo: str) -> RepositoryInfo: ...
+
+    @abstractmethod
+    async def fetch_tree(
+        self, owner: str, repo: str, ref: str
+    ) -> tuple[list[str], bool]: ...
+
+    @abstractmethod
+    async def fetch_readme(
+        self, owner: str, repo: str, ref: str, max_bytes: int
+    ) -> str | None: ...
 
     async def aclose(self) -> None:  # noqa: B027 — default no-op for providers without resources
         pass
@@ -99,11 +128,13 @@ class GitHubProvider(RepositoryProvider):
         query: str,
         limit: int,
         file_extension: str | None = None,
+        language: str | None = None,
     ) -> list[FileMatch]:
         q = f"{query} repo:{owner}/{repo}"
         if file_extension:
-            ext = file_extension.lstrip(".")
-            q = f"{q} extension:{ext}"
+            q = f"{q} extension:{file_extension.lstrip('.')}"
+        if language:
+            q = f"{q} language:{language}"
 
         response = await self._get(
             "/search/code",
@@ -155,6 +186,65 @@ class GitHubProvider(RepositoryProvider):
             size=size,
             truncated=truncated,
         )
+
+    async def fetch_repository_info(self, owner: str, repo: str) -> RepositoryInfo:
+        response = await self._get(
+            f"/repos/{owner}/{repo}",
+            headers={"Accept": _ACCEPT_JSON},
+        )
+        data = response.json()
+        return RepositoryInfo(
+            full_name=data["full_name"],
+            description=data.get("description"),
+            default_branch=data.get("default_branch", "main"),
+            stars=data.get("stargazers_count", 0),
+            forks=data.get("forks_count", 0),
+            language=data.get("language"),
+            topics=data.get("topics", []),
+            html_url=data["html_url"],
+            size_kb=data.get("size", 0),
+        )
+
+    async def fetch_tree(
+        self, owner: str, repo: str, ref: str
+    ) -> tuple[list[str], bool]:
+        response = await self._get(
+            f"/repos/{owner}/{repo}/git/trees/{ref}",
+            params={"recursive": "1"},
+            headers={"Accept": _ACCEPT_JSON},
+        )
+        data = response.json()
+        paths = [
+            item["path"]
+            for item in data.get("tree", [])
+            if item.get("type") == "blob"
+        ]
+        api_truncated: bool = data.get("truncated", False)
+        limit_truncated = len(paths) > _TREE_MAX
+        return sorted(paths[:_TREE_MAX]), api_truncated or limit_truncated
+
+    async def fetch_readme(
+        self, owner: str, repo: str, ref: str, max_bytes: int
+    ) -> str | None:
+        try:
+            response = await self._get(
+                f"/repos/{owner}/{repo}/readme",
+                params={"ref": ref},
+                headers={"Accept": _ACCEPT_JSON},
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        data = response.json()
+        content_b64: str = data.get("content", "")
+        if not content_b64:
+            return None
+        raw = base64.b64decode(content_b64.replace("\n", ""))
+        text = raw[:max_bytes].decode("utf-8", errors="replace")
+        if len(raw) > max_bytes:
+            text += f"\n\n[truncated — README is {len(raw)} bytes]"
+        return text
 
 
 def _extract_snippet(item: dict) -> str:  # type: ignore[type-arg]

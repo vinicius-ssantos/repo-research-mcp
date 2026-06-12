@@ -43,11 +43,12 @@ async def search(
     repository: str,
     limit: int = 10,
     file_extension: str | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """Search for relevant files and code in a repository.
 
-    Returns compact, citable results with stable IDs suitable for fetch.
-    Optionally filter by file extension (e.g. "py", "ts", ".md").
+    Results are ranked with documentation files first.
+    Optionally filter by file extension (e.g. "py", ".ts") or language (e.g. "Python").
     """
     try:
         response = await _get_service().search(
@@ -55,6 +56,7 @@ async def search(
             query=query,
             limit=limit,
             file_extension=file_extension,
+            language=language,
         )
         result: dict[str, Any] = response.model_dump(mode="json")
         return result
@@ -90,6 +92,31 @@ async def fetch(id: str) -> dict[str, Any]:
         return {"error": "upstream_error", "detail": f"GitHub API returned {status}"}
     except Exception:
         logger.exception("unexpected error during fetch")
+        return {"error": "internal_error", "detail": "An unexpected error occurred."}
+
+
+@mcp.tool()
+async def repository_overview(repository: str) -> dict[str, Any]:
+    """Return a structured overview of a repository for research orientation.
+
+    Includes metadata (description, stars, language), file tree, key files,
+    and a README excerpt. Useful as a first call before searching.
+    """
+    try:
+        response = await _get_service().repository_overview(repository=repository)
+        result: dict[str, Any] = response.model_dump(mode="json")
+        return result
+    except PermissionError as exc:
+        logger.warning("repository_overview permission denied: %s", exc)
+        return {"error": "permission_denied", "detail": str(exc)}
+    except ValueError as exc:
+        return {"error": "invalid_request", "detail": str(exc)}
+    except httpx.HTTPStatusError as exc:
+        logger.error("GitHub API error during repository_overview: %s", exc.response.status_code)
+        status = exc.response.status_code
+        return {"error": "upstream_error", "detail": f"GitHub API returned {status}"}
+    except Exception:
+        logger.exception("unexpected error during repository_overview")
         return {"error": "internal_error", "detail": "An unexpected error occurred."}
 
 

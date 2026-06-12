@@ -53,3 +53,25 @@ class SearchResponse(BaseModel):
 
 class FetchResponse(BaseModel):
     document: FetchedDocument
+
+
+class RepositoryOverview(BaseModel):
+    """Repository overview returned by the repository_overview tool."""
+
+    repository: str
+    description: str | None
+    default_branch: str
+    url: HttpUrl
+    stars: int
+    forks: int
+    language: str | None
+    topics: list[str]
+    file_count: int
+    file_tree: list[str]
+    key_files: list[str]
+    readme_excerpt: str | None
+    tree_truncated: bool
+
+
+class RepositoryOverviewResponse(BaseModel):
+    overview: RepositoryOverview
