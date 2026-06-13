@@ -34,6 +34,13 @@ async def _lifespan(server: FastMCP) -> AsyncGenerator[None, None]:
 mcp = FastMCP("repo-research-mcp", lifespan=_lifespan)
 
 
+def _configure_streamable_http_transport() -> None:
+    mcp.settings.host = os.getenv("MCP_HOST", "0.0.0.0")
+    mcp.settings.port = int(os.getenv("MCP_PORT", "8081"))
+    mcp.settings.json_response = True
+    mcp.settings.stateless_http = True
+
+
 def _get_service() -> RepositoryResearchService:
     if _service is None:
         raise RuntimeError("service not initialized")
@@ -292,9 +299,8 @@ def main() -> None:
     configure_logging(_settings.log_format)
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
-        host = os.getenv("MCP_HOST", "0.0.0.0")
-        port = int(os.getenv("MCP_PORT", "8081"))
-        mcp.run(transport="streamable-http", host=host, port=port)
+        _configure_streamable_http_transport()
+        mcp.run(transport="streamable-http")
     else:
         mcp.run()
 

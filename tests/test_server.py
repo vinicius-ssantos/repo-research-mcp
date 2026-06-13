@@ -86,6 +86,24 @@ def _list_files_response() -> ListFilesResponse:
     )
 
 
+def test_main_streamable_http_configures_fastmcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = MagicMock()
+    configure_logging = MagicMock()
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("MCP_PORT", "8081")
+    monkeypatch.setattr(server_module.mcp, "run", run)
+    monkeypatch.setattr(server_module, "configure_logging", configure_logging)
+
+    server_module.main()
+
+    assert server_module.mcp.settings.host == "0.0.0.0"
+    assert server_module.mcp.settings.port == 8081
+    assert server_module.mcp.settings.json_response is True
+    assert server_module.mcp.settings.stateless_http is True
+    run.assert_called_once_with(transport="streamable-http")
+
+
 # --- search ---
 
 
