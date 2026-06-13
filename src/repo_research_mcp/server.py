@@ -176,7 +176,7 @@ async def fetch(id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def repository_overview(repository: str) -> dict[str, Any]:
-    """Return a structured overview of a repository for research orientation.
+    """Read-only. Return a structured overview of a repository for research orientation.
 
     Includes metadata (description, stars, language), file tree, key files,
     and a README excerpt. Useful as a first call before searching.
