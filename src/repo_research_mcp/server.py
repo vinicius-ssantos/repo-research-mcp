@@ -35,13 +35,20 @@ mcp = FastMCP("repo-research-mcp", lifespan=_lifespan)
 
 
 def _configure_streamable_http_transport() -> None:
+    from mcp.server.transport_security import TransportSecuritySettings
+
     mcp.settings.host = os.getenv("MCP_HOST", "0.0.0.0")
     mcp.settings.port = int(os.getenv("MCP_PORT", "8081"))
     mcp.settings.json_response = True
     mcp.settings.stateless_http = True
     allowed = os.getenv("FASTMCP_ALLOWED_HOSTS", "")
     if allowed:
-        mcp.settings.allowed_hosts = [h.strip() for h in allowed.split(",") if h.strip()]
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[h.strip() for h in allowed.split(",") if h.strip()],
+        )
+    else:
+        mcp.settings.transport_security = None
 
 
 def _get_service() -> RepositoryResearchService:
